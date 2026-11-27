@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Governor periodic checks</title>
+<style>
+/* Layout: a drafting sheet, the same one docs/pages/fire-lane.html uses. The live schematic is the page; the caption and controls hang under it like a title block. */
+:root {
+  --paper: rgb(235 239 242);
+  --sheet: rgb(248 250 251);
+  --ink: rgb(23 34 45);
+  --muted: rgb(86 102 118);
+  --rule: rgb(199 208 216);
+  --wire: rgb(135 150 165);
+  --grid: rgb(225 231 236);
+  --fire: rgb(229 142 53);
+  --fire-ink: rgb(35 22 10);
+  --poke: rgb(28 135 128);
+  --poke-ink: rgb(248 250 251);
+  --danger: rgb(178 58 48);
+  --font-display: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: rgb(15 21 27); --sheet: rgb(21 29 37); --ink: rgb(220 228 235); --muted: rgb(147 162 176); --rule: rgb(43 55 67);
+    --wire: rgb(95 111 127); --grid: rgb(27 37 48); --fire: rgb(240 160 75); --fire-ink: rgb(30 18 6); --poke: rgb(69 189 181);
+    --poke-ink: rgb(8 28 27); --danger: rgb(229 122 110); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: rgb(15 21 27); --sheet: rgb(21 29 37); --ink: rgb(220 228 235); --muted: rgb(147 162 176); --rule: rgb(43 55 67);
+  --wire: rgb(95 111 127); --grid: rgb(27 37 48); --fire: rgb(240 160 75); --fire-ink: rgb(30 18 6); --poke: rgb(69 189 181);
+  --poke-ink: rgb(8 28 27); --danger: rgb(229 122 110); color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 15px;
+  line-height: 1.55;
+}
+.wrap {
+  max-width: 1140px;
+  margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 56px;
+  display: grid;
+  gap: 28px;
+}
+header { display: grid; gap: 8px; max-width: 70ch; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+h1 {
+  font-size: clamp(28px, 4vw, 40px);
+  line-height: 1.1;
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+h2 {
+  font-size: 19px;
+  margin: 0;
+  font-weight: 600;
+  text-wrap: balance;
+}
+p { margin: 0; }
+.lede { color: var(--muted); font-size: 16px; }
+.status {
+  justify-self: start;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+  border: 1px solid var(--fire);
+  border-radius: 4px;
+  padding: 4px 9px;
+}
+.context { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px 28px; }
+@media (max-width: 860px) { .context { grid-template-columns: minmax(0, 1fr); } }
+.context section { display: grid; gap: 8px; align-content: start; border-top: 2px solid var(--ink); padding-top: 12px; min-width: 0; }
+.context h2 { font-family: var(--font-mono); font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.context p, .context li { font-size: 14.5px; }
+.context ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.context li strong { font-weight: 600; }
+.context pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+code, .mono { font-family: var(--font-mono); font-size: 0.9em; }
+
+/* The player */
+.player {
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  display: grid;
+  overflow: hidden;
+}
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.tab {
+  font: 500 13px/1 var(--font-display);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 8px 13px;
+  cursor: pointer;
+}
+.tab:hover { color: var(--ink); border-color: var(--rule); }
+.tab[aria-pressed="true"] { color: var(--sheet); background: var(--ink); border-color: var(--ink); }
+.stage { overflow-x: auto; }
+.stage svg { display: block; width: 100%; min-width: 760px; height: auto; }
+
+.titleblock {
+  border-top: 1px solid var(--rule);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px 24px;
+  padding: 16px 18px 18px;
+  align-items: start;
+}
+.caption { display: grid; gap: 6px; min-width: 0; }
+.counter {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.caption p { font-size: 16px; max-width: 72ch; min-height: 4.65em; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+.btn {
+  font: 500 13px/1 var(--font-display);
+  color: var(--ink);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 9px 13px;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) { border-color: var(--ink); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.primary { background: var(--ink); color: var(--sheet); border-color: var(--ink); min-width: 78px; }
+.dots { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.dot {
+  width: 14px; height: 14px; padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--wire);
+  background: transparent;
+  cursor: pointer;
+}
+.dot.past { background: var(--wire); }
+.dot.now { background: var(--fire); border-color: var(--fire); }
+button:focus-visible { outline: 2px solid var(--fire); outline-offset: 2px; }
+@media (max-width: 700px) {
+  .titleblock { grid-template-columns: minmax(0, 1fr); }
+  .controls { justify-content: flex-start; }
+}
+
+/* Legend */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 0 2px;
+}
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.legend svg { flex: none; }
+
+/* Schematic */
+svg text { font-family: var(--font-mono); fill: var(--ink); }
+.gridline { fill: none; stroke: var(--grid); stroke-width: 1; }
+.box { fill: var(--sheet); stroke: var(--ink); stroke-width: 1.25; }
+.src .box { stroke: var(--wire); }
+.ntitle { font-family: var(--font-display); font-weight: 600; font-size: 13.5px; }
+.ntitle.mono { font-family: var(--font-mono); font-weight: 500; font-size: 12px; }
+.nsub { font-size: 10.5px; fill: var(--muted); }
+.check { font-size: 10.5px; fill: var(--muted); }
+.readout { font-size: 11px; font-weight: 500; }
+.readout.strong { font-size: 12px; font-weight: 600; }
+.hint { font-size: 10px; fill: var(--muted); }
+.sep { stroke: var(--rule); stroke-width: 1; }
+.elabel { font-size: 10.5px; fill: var(--muted); }
+.wire { fill: none; stroke: var(--wire); stroke-width: 1.5; transition: stroke 160ms; }
+.wire.signal { stroke-dasharray: 5 4; }
+.wire.lit { stroke: var(--fire); stroke-width: 2.25; }
+.wire.signal.lit { stroke: var(--poke); }
+.arrowhead { fill: var(--wire); }
+.node .box { transition: stroke 160ms, stroke-width 160ms; }
+.node.focus .box { stroke: var(--fire); stroke-width: 2.25; }
+
+.pill rect { fill: var(--grid); }
+.pill text { font-size: 10px; fill: var(--muted); }
+.pill.on rect { fill: var(--ink); }
+.pill.on text { fill: var(--sheet); font-weight: 600; }
+.pill.on.working rect { fill: var(--fire); }
+.pill.on.working text { fill: var(--fire-ink); }
+.pill.on.hold rect { fill: var(--poke); }
+.pill.on.hold text { fill: var(--poke-ink); }
+.loop { fill: none; stroke: var(--wire); stroke-width: 1.25; }
+.task-none-label { font-size: 11px; fill: var(--muted); display: none; }
+#n-task.status-none .box { stroke-dasharray: 4 4; stroke: var(--wire); }
+#n-task.status-none .pills, #n-task.status-none .loop { display: none; }
+#n-task.status-none .task-none-label { display: block; }
+#n-task.status-none .ntitle, #n-task.status-none .nsub { fill: var(--muted); }
+#n-session.busy .box { stroke: var(--poke); stroke-width: 2.25; }
+.cell { fill: var(--grid); stroke: var(--rule); stroke-width: 1; }
+.cell.on { fill: var(--fire); stroke: var(--fire); }
+
+.chip-fire rect { fill: var(--fire); }
+.chip-fire text { fill: var(--fire-ink); font-size: 10.5px; font-weight: 600; }
+.chip-delivery rect { fill: var(--sheet); stroke: var(--ink); stroke-width: 1.25; }
+.chip-delivery text { font-size: 10px; }
+.chip-reply rect { fill: var(--ink); }
+.chip-reply text { fill: var(--sheet); font-size: 10px; font-weight: 600; }
+.chip-signal rect { fill: var(--sheet); stroke: var(--poke); stroke-width: 1.5; }
+.chip-signal text { font-size: 10px; }
+.dot-query { fill: var(--muted); }
+
+.notes { display: grid; gap: 10px; max-width: 76ch; }
+.notes ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: var(--muted); }
+.notes li strong { color: var(--ink); font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wire, .node .box { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">gh-governor · how a periodic's limits are checked</div>
+    <h1>One check, two callers</h1>
+    <p class="lede">A periodic starts a session when one of its limits is reached: a count of merges that touch given paths, a count of issues, or a time limit. An event never carries a count. It only queues a check, and the check reads the count afresh from GitHub. This page follows fires, turns and checks through four cases.</p>
+    <div class="status">Proposed in PRD #772. Not built yet.</div>
+  </header>
+
+  <div class="context">
+    <section aria-labelledby="ctx-limit">
+      <h2 id="ctx-limit">A limit</h2>
+      <p>A periodic has a prompt and a <code>when</code>. It fires when any one limit is reached.</p>
+<pre>"Turn review": {
+  "prompt": { "file": "…" },
+  "when": {
+    "merges": { "count": 10,
+      "paths": ["dispatch/**"] },
+    "days": 30
+  }
+}</pre>
+      <p>Each limit names a measure. A measure says which events wake a check, and how to read what happened since the last fire.</p>
+    </section>
+    <section aria-labelledby="ctx-check">
+      <h2 id="ctx-check">The check</h2>
+      <p>One planner reads a repo's due periodics and hands its launches to <code>launchPlan</code>, the path every session starts through. Two things run it:</p>
+      <ul>
+        <li><strong>An event's own fire.</strong> A merge, or an issue opened or closed, queues a <code>periodics</code> fire for the repo.</li>
+        <li><strong>The hourly sweep.</strong> It reads every limit, and it is where a time limit comes due.</li>
+        <li><strong>Nothing else.</strong> A held fire waits for one of those two.</li>
+      </ul>
+    </section>
+    <section aria-labelledby="ctx-rules">
+      <h2 id="ctx-rules">Rules</h2>
+      <ul>
+        <li><strong>No running total.</strong> Every count is read from GitHub since the periodic's last fire, so a lost webhook only delays a fire.</li>
+        <li><strong>A periodic never overlaps itself.</strong> A fire that comes due while its last session is in the middle of a turn is held until the next check.</li>
+        <li><strong>A time limit is a plain timer.</strong> It runs from the last fire, and it starts a session even where nothing was counted.</li>
+        <li><strong>A record moves only after a launch.</strong> A failed launch leaves the periodic due.</li>
+      </ul>
+    </section>
+  </div>
+
+  <section class="player" aria-label="Animated scenarios">
+    <div class="tabs" id="tabs"></div>
+    <div class="stage">
+      <svg id="lane" viewBox="0 92 1080 453" role="img" aria-label="How a periodic's limits are checked. GitHub and the hourly schedule post to the receiver. The receiver queues fires on one lane, and the dispatcher task takes them one at a time. A periodics fire and the sweep each run the same periodics check. The check reads the periodic's record from the state table and the window from the GitHub API, asks whether the last session is in a turn, and starts a session through launchPlan when a limit is reached.">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" class="arrowhead"/>
+          </marker>
+          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M20 0 H0 V20" class="gridline"/>
+          </pattern>
+        </defs>
+        <rect x="0" y="0" width="1080" height="545" fill="url(#grid)"/>
+
+        <g class="wires">
+          <path id="e-gh" class="wire" d="M150 134 H182 V180 H213" marker-end="url(#arrow)"/>
+          <path id="e-sched" class="wire" d="M150 294 H182 V250 H213" marker-end="url(#arrow)"/>
+          <path id="e-send" class="wire" d="M365 215 H438" marker-end="url(#arrow)"/>
+          <path id="e-take" class="wire" d="M640 215 H718" marker-end="url(#arrow)"/>
+          <path id="e-check" class="wire" d="M805 320 V358" marker-end="url(#arrow)"/>
+          <path id="e-busy" class="wire signal" d="M890 190 H938" marker-end="url(#arrow)"/>
+          <path id="e-record" class="wire" d="M438 406 H367" marker-end="url(#arrow)"/>
+          <path id="e-window" class="wire" d="M438 494 H367" marker-end="url(#arrow)"/>
+          <path id="e-launch" class="wire" d="M890 440 H1002 V272" marker-end="url(#arrow)"/>
+        </g>
+
+        <g class="elabels">
+          <text class="elabel" x="402" y="207" text-anchor="middle">send</text>
+          <text class="elabel" x="679" y="207" text-anchor="middle">receive</text>
+          <text class="elabel" x="813" y="343">runs the check</text>
+          <text class="elabel" x="942" y="140">in a turn?</text>
+          <text class="elabel" x="402" y="398" text-anchor="middle">records</text>
+          <text class="elabel" x="402" y="486" text-anchor="middle">window</text>
+          <text class="elabel" x="1010" y="432">launchPlan</text>
+        </g>
+
+        <g class="node src" id="n-gh" data-key="gh">
+          <rect class="box" x="20" y="110" width="130" height="48" rx="6"/>
+          <text class="ntitle" x="85" y="131" text-anchor="middle">GitHub</text>
+          <text class="nsub" x="85" y="147" text-anchor="middle">merges, issues</text>
+        </g>
+        <g class="node src" id="n-sched" data-key="sched">
+          <rect class="box" x="20" y="270" width="130" height="48" rx="6"/>
+          <text class="ntitle" x="85" y="291" text-anchor="middle">Schedule</text>
+          <text class="nsub" x="85" y="307" text-anchor="middle">every hour</text>
+        </g>
+
+        <g class="node" id="n-recv" data-key="recv">
+          <rect class="box" x="215" y="150" width="150" height="130" rx="6"/>
+          <text class="ntitle" x="290" y="172" text-anchor="middle">Receiver</text>
+          <text class="nsub" x="290" y="187" text-anchor="middle">Lambda · per delivery</text>
+          <text class="check" x="232" y="207">· signature</text>
+          <text class="check" x="232" y="221">· owner list</text>
+          <text class="check" x="232" y="235">· what wakes a check</text>
+          <line class="sep" x1="227" y1="248" x2="353" y2="248"/>
+          <text class="readout" id="recv-read" x="290" y="267" text-anchor="middle">idle</text>
+        </g>
+
+        <g class="node" id="n-queue" data-key="queue">
+          <rect class="box" x="440" y="170" width="200" height="90" rx="6"/>
+          <text class="ntitle mono" x="540" y="189" text-anchor="middle">governor-fires.fifo</text>
+          <text class="hint" id="q-empty" x="540" y="219" text-anchor="middle">empty</text>
+          <g id="q-chips"></g>
+          <text class="hint" x="540" y="251" text-anchor="middle">one fire, one turn</text>
+        </g>
+
+        <g class="node status-none" id="n-task" data-key="task">
+          <rect class="box" x="720" y="120" width="170" height="200" rx="6"/>
+          <text class="ntitle" x="805" y="140" text-anchor="middle">Dispatcher task</text>
+          <text class="nsub" x="805" y="155" text-anchor="middle">Fargate · at most one</text>
+          <text class="task-none-label" x="805" y="228" text-anchor="middle">no task running</text>
+          <g class="pills" id="pills"></g>
+          <path class="loop" d="M876 219 C 889 219, 889 172, 878 172" marker-end="url(#arrow)"/>
+        </g>
+
+        <g class="node" id="n-session" data-key="session">
+          <rect class="box" x="940" y="150" width="125" height="120" rx="6"/>
+          <text class="ntitle" x="1002" y="171" text-anchor="middle">Session</text>
+          <text class="nsub" x="1002" y="186" text-anchor="middle">the periodic's run</text>
+          <line class="sep" x1="952" y1="197" x2="1053" y2="197"/>
+          <text class="readout" id="s-line" x="952" y="217"></text>
+          <text class="hint" id="s-sub" x="952" y="234"></text>
+          <text class="hint" id="s-sub2" x="952" y="249"></text>
+        </g>
+
+        <g class="node" id="n-table" data-key="table">
+          <rect class="box" x="215" y="360" width="150" height="92" rx="6"/>
+          <text class="ntitle" x="290" y="380" text-anchor="middle">State table</text>
+          <line class="sep" x1="227" y1="390" x2="353" y2="390"/>
+          <text class="readout" id="t-fire" x="228" y="407"></text>
+          <text class="readout" id="t-held" x="228" y="423"></text>
+          <text class="readout" id="t-files" x="228" y="439"></text>
+        </g>
+
+        <g class="node src" id="n-api" data-key="api">
+          <rect class="box" x="215" y="470" width="150" height="48" rx="6"/>
+          <text class="ntitle" x="290" y="491" text-anchor="middle">GitHub API</text>
+          <text class="nsub" x="290" y="507" text-anchor="middle">read afresh each check</text>
+        </g>
+
+        <g class="node" id="n-check" data-key="check">
+          <rect class="box" x="440" y="360" width="450" height="165" rx="6"/>
+          <text class="ntitle" x="456" y="381">Periodics check</text>
+          <text class="nsub" x="874" y="381" text-anchor="end">one planner · the same for every caller</text>
+          <line class="sep" x1="452" y1="391" x2="878" y2="391"/>
+          <text class="readout strong" id="p-name" x="456" y="411"></text>
+          <text class="hint" id="p-rule" x="874" y="411" text-anchor="end"></text>
+          <text class="check" x="456" y="438">merges</text>
+          <g id="p-cells"></g>
+          <text class="readout" id="p-count" x="740" y="438"></text>
+          <text class="check" x="456" y="462">time</text>
+          <text class="readout" id="p-age" x="520" y="462"></text>
+          <line class="sep" x1="452" y1="476" x2="878" y2="476"/>
+          <text class="check" x="456" y="499">run by</text>
+          <text class="readout" id="p-caller" x="520" y="499"></text>
+          <g class="pill" id="p-verdict">
+            <rect x="700" y="486" width="174" height="20" rx="3"/>
+            <text id="p-verdict-text" x="787" y="496.5" text-anchor="middle" dominant-baseline="central"></text>
+          </g>
+        </g>
+
+        <g id="movers"></g>
+      </svg>
+    </div>
+    <div class="titleblock">
+      <div class="caption">
+        <div class="counter" id="counter">Start</div>
+        <p id="caption" aria-live="polite"></p>
+      </div>
+      <div class="controls">
+        <button class="btn" id="back" type="button">Back</button>
+        <button class="btn primary" id="play" type="button">Play</button>
+        <button class="btn" id="next" type="button">Next</button>
+        <button class="btn" id="restart" type="button">Restart</button>
+      </div>
+      <div class="dots" id="dots" aria-label="Jump to a step"></div>
+    </div>
+  </section>
+
+  <div class="legend" aria-label="Legend">
+    <span><svg width="34" height="20" viewBox="0 0 34 20" aria-hidden="true"><g class="chip-fire"><rect x="1" y="1" width="32" height="18" rx="4"/><text x="17" y="10.5" text-anchor="middle" dominant-baseline="central">P1</text></g></svg>A fire. P is a periodics check, X a merge's conflict check, S the hourly sweep.</span>
+    <span><svg width="34" height="20" viewBox="0 0 34 20" aria-hidden="true"><g class="chip-delivery"><rect x="1.5" y="1.5" width="31" height="17" rx="4"/><text x="17" y="10.5" text-anchor="middle" dominant-baseline="central">202</text></g></svg>A delivery, or an HTTP answer.</span>
+    <span><svg width="46" height="20" viewBox="0 0 46 20" aria-hidden="true"><g class="chip-signal"><rect x="1.5" y="1.5" width="43" height="17" rx="4"/><text x="23" y="10.5" text-anchor="middle" dominant-baseline="central">idle</text></g></svg>A call, a write or an answer.</span>
+    <span><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="3.5" class="dot-query"/></svg>A read.</span>
+    <span><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect class="cell on" x="1" y="1" width="14" height="14" rx="2"/></svg>One merge the limit counts.</span>
+  </div>
+
+  <section class="notes" aria-labelledby="notes-h">
+    <h2 id="notes-h">What the animation does not show</h2>
+    <ul>
+      <li><strong>The starter and the login.</strong> A task is started when a fire waits and none runs, and each turn restores the claude.ai login. The fire lane page follows both.</li>
+      <li><strong>The minimum gap.</strong> A periodic with <code>gapHours</code> never fires inside that many hours of its last run. A count reached there fires on the first check after it.</li>
+      <li><strong>What a check reads.</strong> A check that finds nothing due makes one list read of merged pull requests, and one files read for the merge that just landed. It stores no total.</li>
+      <li><strong>A repo with no limit on merges.</strong> The receiver queues a periodics fire only where the repo's file has a limit the event wakes.</li>
+      <li><strong>A new periodic.</strong> With no record, the check writes now as the baseline and starts nothing. Its window opens there.</li>
+      <li><strong>Issues and labels.</strong> <code>issuesOpened</code> and <code>issuesClosed</code> are checked the same way. A limit with <code>labels</code> is also checked when an issue's label changes.</li>
+      <li><strong>Other fires.</strong> A turn does much more than this. Only the fires a merge and the schedule queue are drawn.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+(() => {
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  let reduce = false;
+  try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { reduce = false; }
+
+  const $ = (sel) => document.querySelector(sel);
+  const svg = $('#lane');
+  const movers = $('#movers');
+
+  const STAGES = [
+    ['poll', 'long-poll the lane'],
+    ['turn', 'turn'],
+    ['idle', 'idle grace · 60 s'],
+    ['exit', 'exit'],
+  ];
+
+  // Build the task's stage pills once.
+  const pillsG = $('#pills');
+  const pillEls = {};
+  STAGES.forEach(([key, label], i) => {
+    const g = document.createElementNS(SVGNS, 'g');
+    g.setAttribute('class', 'pill');
+    const y = 163 + i * 24;
+    const r = document.createElementNS(SVGNS, 'rect');
+    r.setAttribute('x', 735); r.setAttribute('y', y); r.setAttribute('width', 138); r.setAttribute('height', 17); r.setAttribute('rx', 3);
+    const t = document.createElementNS(SVGNS, 'text');
+    t.setAttribute('x', 804); t.setAttribute('y', y + 8.5); t.setAttribute('text-anchor', 'middle'); t.setAttribute('dominant-baseline', 'central');
+    t.textContent = label;
+    g.append(r, t);
+    pillsG.append(g);
+    pillEls[key] = { g, t, label };
+  });
+
+  // State helpers.
+  const TURN_REVIEW = { name: 'Turn review', rule: 'merges 10 · paths dispatch/** · days 30', limit: 10 };
+  const INFRA = { name: 'Infra change', rule: 'merges 1 · paths infra/**', limit: 1 };
+  const state = (per, table, session) => ({
+    queue: [],
+    task: { status: 'none', stage: null, fire: null },
+    receiver: 'idle',
+    per: { caller: '', verdict: ['waiting for a check', ''], ...per },
+    table,
+    session,
+  });
+  const clone = (s) => JSON.parse(JSON.stringify(s));
+  const noTask = (s) => { s.task = { status: 'none', stage: null, fire: null }; };
+  const take = (s, n = 1) => { s.task = { status: 'running', stage: 'poll', fire: null }; s.queue.splice(0, n); };
+  const working = (s, id) => { s.task = { status: 'running', stage: 'turn', fire: id }; };
+  const stage = (s, key) => { s.task = { status: 'running', stage: key, fire: null }; };
+  const verdict = (s, text, cls = '') => { s.per.verdict = [text, cls]; };
+  const fired = (s, session, listed) => {
+    s.session = { busy: true, line: `${session} · in a turn`, sub: listed, sub2: 'under its prompt' };
+    s.table.fire = 'last fire  just now';
+    s.per.count = 0;
+    verdict(s, 'fired · record moved', 'working');
+  };
+
+  // A move: e = edge id, k = kind, t = text, rev = travel backwards, d = delay in ms.
+  const merge = (d = 0) => ({ e: 'e-gh', k: 'delivery', t: 'pull_request', d });
+  const answer = (d = 250) => ({ e: 'e-gh', k: 'reply', t: '202', rev: true, d });
+  const readRecord = (d = 0) => [{ e: 'e-record', k: 'query', d }, { e: 'e-record', k: 'signal', t: 'last fire', rev: true, d: d + 450 }];
+  const readWindow = (t, d = 0) => [{ e: 'e-window', k: 'query', d }, { e: 'e-window', k: 'signal', t, rev: true, d: d + 450 }];
+  const askSession = (t, d = 0) => [{ e: 'e-busy', k: 'query', d }, { e: 'e-busy', k: 'signal', t, rev: true, d: d + 450 }];
+
+  const SCENARIOS = [
+    {
+      id: 'a-merge-counts',
+      name: 'A merge counts',
+      intro: 'Turn review fires after ten merges that change a file under dispatch/. Seven have merged since its last fire, three days ago. Press Play, or step through with Next.',
+      init: () => state(
+        { ...TURN_REVIEW, count: 7, age: '3 d of 30 since the last fire' },
+        { fire: 'last fire  3 d ago', held: 'held  none', files: 'files  10 PRs kept' },
+        { busy: false, line: 'last run · idle', sub: 'signed off', sub2: '' },
+      ),
+      steps: [
+        { c: 'Pull request #48 merges into the default branch. GitHub posts the delivery to the receiver.', focus: ['recv'],
+          moves: [merge()], apply: (s) => { s.receiver = 'checking'; } },
+        { c: 'A merge wakes the merges measure, so the receiver queues two fires. X1 is the conflict check every merge gets. P1 is a periodics check for the repo, a fire of its own. It names the repo and the kind of event, and carries no count.', focus: ['recv', 'queue'],
+          moves: [{ e: 'e-send', k: 'fire', t: 'X1' }, { e: 'e-send', k: 'fire', t: 'P1', d: 320 }, answer(300)],
+          apply: (s) => { s.queue.push('X1', 'P1'); s.receiver = '202, 2 queued'; } },
+        { c: 'A task starts, as it does for any fire. It takes X1 and runs the conflict check as one turn. That turn knows nothing about periodics.', focus: ['task', 'queue'],
+          pre: (s) => { take(s); }, moves: [{ e: 'e-take', k: 'fire', t: 'X1' }], apply: (s) => { working(s, 'X1'); } },
+        { c: 'Then it takes P1. This turn has one planner, and the planner runs the periodics check for the repo.', focus: ['task', 'check'],
+          pre: (s) => { take(s); }, moves: [{ e: 'e-take', k: 'fire', t: 'P1' }, { e: 'e-check', k: 'signal', t: 'check', d: 700 }],
+          apply: (s) => { working(s, 'P1'); s.per.caller = 'event fire P1'; verdict(s, 'reading', 'on'); } },
+        { c: 'The check reads the periodic\'s record: when Turn review last fired, and the session that fire started. The window opens at that time.', focus: ['check', 'table'],
+          moves: readRecord() },
+        { c: 'It reads the window afresh from GitHub: every pull request merged since then. There are eleven. Governor keeps no running total, so a webhook that never arrived cannot make the count wrong.', focus: ['check', 'api'],
+          moves: readWindow('11 merged') },
+        { c: 'paths narrows the window. The files of ten of them are kept in the state table, because a merged pull request\'s files never change. The check reads the files of #48 once and keeps them too.', focus: ['check', 'api', 'table'],
+          moves: [...readWindow('files of #48'), { e: 'e-record', k: 'signal', t: 'files #48', d: 1100 }],
+          apply: (s) => { s.table.files = 'files  11 PRs kept'; } },
+        { c: '#48 changed dispatch/turn.mjs, so it counts. Eight of the eleven match. Eight is short of ten, so the check starts nothing and writes no record.', focus: ['check'],
+          apply: (s) => { s.per.count = 8; verdict(s, 'not due · 8 of 10'); } },
+        { c: 'The turn ends. A merge that changed only docs/ would also queue a P fire, and its check would still read eight. The lane stays empty for 60 seconds and the task exits.', focus: ['task'],
+          pre: (s) => { stage(s, 'idle'); }, apply: (s) => { noTask(s); s.per.caller = ''; s.receiver = 'idle'; } },
+      ],
+    },
+    {
+      id: 'the-limit-is-reached',
+      name: 'The limit is reached',
+      intro: 'Nine merges under dispatch/ have landed since Turn review last fired. Its last session signed off days ago.',
+      init: () => state(
+        { ...TURN_REVIEW, count: 9, age: '6 d of 30 since the last fire' },
+        { fire: 'last fire  6 d ago', held: 'held  none', files: 'files  14 PRs kept' },
+        { busy: false, line: 'last run · idle', sub: 'signed off', sub2: '' },
+      ),
+      steps: [
+        { c: 'Pull request #52 merges. It changes dispatch/webhook/route.mjs. The receiver queues its conflict check, X2, and a periodics check, P2.', focus: ['recv', 'queue'],
+          moves: [merge(), { e: 'e-send', k: 'fire', t: 'X2', d: 800 }, { e: 'e-send', k: 'fire', t: 'P2', d: 1100 }, answer(900)],
+          apply: (s) => { s.queue.push('X2', 'P2'); s.receiver = '202, 2 queued'; } },
+        { c: 'The task runs X2 as one turn, then takes P2. P2\'s planner runs the check.', focus: ['task', 'check'],
+          pre: (s) => { take(s, 2); },
+          moves: [{ e: 'e-take', k: 'fire', t: 'X2' }, { e: 'e-take', k: 'fire', t: 'P2', d: 600 }, { e: 'e-check', k: 'signal', t: 'check', d: 1300 }],
+          apply: (s) => { working(s, 'P2'); s.per.caller = 'event fire P2'; verdict(s, 'reading', 'on'); } },
+        { c: 'The record and the window are read as before. Ten merges since the last fire changed a matching file. The limit is reached on the event that reached it, not on the next hourly sweep.', focus: ['check', 'api', 'table'],
+          moves: [...readRecord(), ...readWindow('15 merged', 500)],
+          apply: (s) => { s.per.count = 10; s.table.files = 'files  15 PRs kept'; verdict(s, 'due · merges 10', 'working'); } },
+        { c: 'A periodic never overlaps itself, so the check asks whether the session its last fire started is in the middle of a turn. That session is idle. Nothing holds this fire.', focus: ['check', 'session'],
+          moves: askSession('idle') },
+        { c: 'The planner hands launchPlan one launch, the path a ticket\'s session starts through. The prompt is the repo\'s own. Under it governor lists the ten merges and the files they changed most often.', focus: ['check', 'session'],
+          moves: [{ e: 'e-launch', k: 'signal', t: 'launch' }],
+          apply: (s) => { s.session = { busy: true, line: 'S2 · in a turn', sub: '10 merges listed', sub2: 'under its prompt' }; verdict(s, 'launched', 'working'); } },
+        { c: 'Only after the launch does the check move the record: the time the window was read, and the new session. The next window opens there, so the count is back to zero and the 30 days start again.', focus: ['check', 'table'],
+          moves: [{ e: 'e-record', k: 'signal', t: 'record' }],
+          apply: (s) => { fired(s, 'S2', '10 merges listed'); s.per.age = '0 d of 30 since the last fire'; } },
+        { c: 'The turn ends, the lane stays empty and the task exits. The session reviews the ten merges without governor.', focus: ['task'],
+          pre: (s) => { stage(s, 'idle'); }, apply: (s) => { noTask(s); s.per.caller = ''; s.receiver = 'idle'; } },
+      ],
+    },
+    {
+      id: 'a-burst-and-a-hold',
+      name: 'A burst and a hold',
+      intro: 'Infra change fires on every merge that changes a file under infra/: a count of 1. It fired nine minutes ago, and the session that fire started, S1, is still working.',
+      init: () => state(
+        { ...INFRA, count: 0, age: 'no time limit set' },
+        { fire: 'last fire  9 min ago', held: 'held  none', files: 'files  1 PR kept' },
+        { busy: true, line: 'S1 · in a turn', sub: '1 merge listed', sub2: '' },
+      ),
+      steps: [
+        { c: 'Two pull requests merge a minute apart, and both change infra/. Each delivery queues its conflict check and its periodics check, so four fires wait in order.', focus: ['recv', 'queue'],
+          moves: [merge(), merge(380), { e: 'e-send', k: 'fire', t: 'X1', d: 900 }, { e: 'e-send', k: 'fire', t: 'P1', d: 1150 }, { e: 'e-send', k: 'fire', t: 'X2', d: 1400 }, { e: 'e-send', k: 'fire', t: 'P2', d: 1650 }, answer(1000), answer(1500)],
+          apply: (s) => { s.queue.push('X1', 'P1', 'X2', 'P2'); s.receiver = '202 ×2, 4 queued'; } },
+        { c: 'The task runs X1, then takes P1. The check reads one matching merge since the last fire. The limit of 1 is reached.', focus: ['task', 'check'],
+          pre: (s) => { take(s, 2); },
+          moves: [{ e: 'e-take', k: 'fire', t: 'X1' }, { e: 'e-take', k: 'fire', t: 'P1', d: 600 }, { e: 'e-check', k: 'signal', t: 'check', d: 1300 }, ...readWindow('1 match', 1700)],
+          apply: (s) => { working(s, 'P1'); s.per.caller = 'event fire P1'; s.per.count = 1; verdict(s, 'due · merges 1', 'working'); } },
+        { c: 'The check asks whether S1 is in the middle of a turn. It is. A second session now would run over the first, so the fire is held.', focus: ['check', 'session'],
+          moves: askSession('in a turn'), apply: (s) => { verdict(s, 'held · S1 in a turn', 'hold'); } },
+        { c: 'A held fire writes nothing. The periodic\'s record stays where it was, so the window stays open and the count keeps growing. Only the heartbeat line changes, to say the fire is held.', focus: ['check', 'table'] },
+        { c: 'X2 and P2 run next. This check reads two merges since the last fire. S1 is still in a turn, so the fire stays held.', focus: ['task', 'check'],
+          pre: (s) => { take(s, 2); },
+          moves: [{ e: 'e-take', k: 'fire', t: 'X2' }, { e: 'e-take', k: 'fire', t: 'P2', d: 600 }, { e: 'e-check', k: 'signal', t: 'check', d: 1300 }, ...readWindow('2 match', 1700), ...askSession('in a turn', 2500)],
+          apply: (s) => { working(s, 'P2'); s.per.caller = 'event fire P2'; s.per.count = 2; } },
+        { c: 'The lane is empty, so after 60 idle seconds the task exits. Nothing watches S1. The held fire waits for the next check.', focus: ['task'],
+          pre: (s) => { stage(s, 'idle'); }, apply: (s) => { noTask(s); s.per.caller = ''; s.receiver = 'idle'; } },
+        { c: 'S1 finishes its turn. No event tells governor that, and governor does not ask.', focus: ['session'],
+          apply: (s) => { s.session = { busy: false, line: 'S1 · idle', sub: 'turn ended', sub2: '' }; } },
+        { c: 'A few minutes later another pull request merges. It changes only docs/. Every merge queues a conflict check and a periodics check, whatever files it changed.', focus: ['recv', 'queue'],
+          moves: [merge(), { e: 'e-send', k: 'fire', t: 'X3', d: 800 }, { e: 'e-send', k: 'fire', t: 'P3', d: 1100 }, answer(900)],
+          apply: (s) => { s.queue.push('X3', 'P3'); s.receiver = '202, 2 queued'; } },
+        { c: 'The task runs X3, then P3. The docs/ merge does not count, so the check still reads two. This time S1 is idle, and nothing holds the fire.', focus: ['task', 'check', 'session'],
+          pre: (s) => { take(s, 2); },
+          moves: [{ e: 'e-take', k: 'fire', t: 'X3' }, { e: 'e-take', k: 'fire', t: 'P3', d: 600 }, { e: 'e-check', k: 'signal', t: 'check', d: 1300 }, ...readWindow('2 match', 1700), ...askSession('idle', 2500)],
+          apply: (s) => { working(s, 'P3'); s.per.caller = 'event fire P3'; verdict(s, 'due · merges 2', 'working'); } },
+        { c: 'One session, S2, starts with both merges listed, and the record moves to this fire. Two merges cost one extra session, not two.', focus: ['check', 'session', 'table'],
+          moves: [{ e: 'e-launch', k: 'signal', t: 'launch' }, { e: 'e-record', k: 'signal', t: 'record', d: 800 }],
+          apply: (s) => { fired(s, 'S2', '2 merges listed'); } },
+        { c: 'In a repo that had gone quiet, no merge would have come. The hourly sweep runs the same check, so the held fire would have waited an hour at most.', focus: ['task'],
+          pre: (s) => { stage(s, 'idle'); }, apply: (s) => { noTask(s); s.per.caller = ''; s.receiver = 'idle'; } },
+      ],
+    },
+    {
+      id: 'a-time-limit',
+      name: 'A time limit',
+      intro: 'Work on dispatch/ has gone quiet. Four merges are waiting for Turn review, short of ten, and no event will come to wake a check. Turn review last fired almost 30 days ago.',
+      init: () => state(
+        { ...TURN_REVIEW, count: 4, age: '29 d 23 h of 30 d since the last fire' },
+        { fire: 'last fire  30 d ago', held: 'held  none', files: 'files  9 PRs kept' },
+        { busy: false, line: 'last run · idle', sub: 'signed off', sub2: '' },
+      ),
+      steps: [
+        { c: 'The hourly schedule posts to the receiver. It carries no event and names no repo.', focus: ['recv'],
+          moves: [{ e: 'e-sched', k: 'delivery', t: 'schedule' }], apply: (s) => { s.receiver = 'checking'; } },
+        { c: 'The receiver queues S1, the bare schedule fire. Its turn is the sweep.', focus: ['recv', 'queue'],
+          moves: [{ e: 'e-send', k: 'fire', t: 'S1' }], apply: (s) => { s.queue.push('S1'); s.receiver = 'queued'; } },
+        { c: 'The task takes S1. The sweep does its other work, and it runs the periodics check for every served repo and reads every limit.', focus: ['task', 'check'],
+          pre: (s) => { take(s); }, moves: [{ e: 'e-take', k: 'fire', t: 'S1' }, { e: 'e-check', k: 'signal', t: 'check', d: 700 }],
+          apply: (s) => { working(s, 'S1'); s.per.caller = 'hourly sweep'; verdict(s, 'reading', 'on'); } },
+        { c: 'merges reads four of ten. days is a plain timer. It runs from the last fire, whatever was counted, and that fire was 30 days ago.', focus: ['check', 'api', 'table'],
+          moves: [...readRecord(), ...readWindow('4 match', 500)],
+          apply: (s) => { s.per.age = '30 d of 30 since the last fire'; verdict(s, 'due · days 30', 'working'); } },
+        { c: 'So days is reached. The last session is idle, and one session starts with the four merges listed. A periodic with days never goes longer than that between runs.', focus: ['check', 'session', 'table'],
+          moves: [...askSession('idle'), { e: 'e-launch', k: 'signal', t: 'launch', d: 1100 }, { e: 'e-record', k: 'signal', t: 'record', d: 1900 }],
+          apply: (s) => { fired(s, 'S3', '4 merges listed'); s.per.age = '0 d of 30 since the last fire'; } },
+        { c: 'The 30 days start again at this fire. If nothing merges in that time the session still starts, and governor\'s lines under the prompt say none merged. The prompt decides what to do then. A periodic that should run only on changes leaves days out.', focus: ['check'],
+          apply: (s) => { stage(s, 'idle'); s.per.caller = ''; verdict(s, 'not due'); s.receiver = 'idle'; } },
+      ],
+    },
+  ];
+
+  // Rendering.
+  const chip = (cls, text, w) => {
+    const g = document.createElementNS(SVGNS, 'g');
+    g.setAttribute('class', cls);
+    const r = document.createElementNS(SVGNS, 'rect');
+    r.setAttribute('x', -w / 2); r.setAttribute('y', -10); r.setAttribute('width', w); r.setAttribute('height', 20); r.setAttribute('rx', 4);
+    const t = document.createElementNS(SVGNS, 'text');
+    t.setAttribute('x', 0); t.setAttribute('y', 0.5); t.setAttribute('text-anchor', 'middle'); t.setAttribute('dominant-baseline', 'central');
+    t.textContent = text;
+    g.append(r, t);
+    return g;
+  };
+  const dot = (cls, r) => {
+    const c = document.createElementNS(SVGNS, 'circle');
+    c.setAttribute('class', cls); c.setAttribute('r', r); c.setAttribute('cx', 0); c.setAttribute('cy', 0);
+    return c;
+  };
+  const moverFor = (m) => {
+    switch (m.k) {
+      case 'fire': return chip('chip-fire', m.t, 34);
+      case 'delivery': return chip('chip-delivery', m.t, m.t.length * 6.2 + 14);
+      case 'reply': return chip('chip-reply', m.t, 32);
+      case 'signal': return chip('chip-signal', m.t, m.t.length * 6.2 + 14);
+      default: return dot('dot-query', 3.5);
+    }
+  };
+
+  const render = (s, focus) => {
+    const q = $('#q-chips');
+    q.replaceChildren();
+    s.queue.forEach((id, i) => {
+      const g = chip('chip-fire', id, 34);
+      g.setAttribute('transform', `translate(${613 - i * 38},215)`);
+      q.append(g);
+    });
+    $('#q-empty').style.display = s.queue.length ? 'none' : '';
+
+    const task = $('#n-task');
+    ['none', 'running'].forEach((st) => task.classList.remove('status-' + st));
+    task.classList.add('status-' + s.task.status);
+    STAGES.forEach(([key]) => {
+      const p = pillEls[key];
+      const on = s.task.stage === key;
+      let cls = 'pill';
+      if (on) cls += ' on';
+      if (on && key === 'turn' && s.task.fire) cls += ' working';
+      p.g.setAttribute('class', cls);
+      p.t.textContent = key === 'turn' && s.task.fire ? `turn · ${s.task.fire}` : p.label;
+    });
+
+    $('#recv-read').textContent = s.receiver;
+
+    $('#p-name').textContent = s.per.name;
+    $('#p-rule').textContent = s.per.rule;
+    const cells = $('#p-cells');
+    cells.replaceChildren();
+    const n = Math.min(s.per.limit, 10);
+    for (let i = 0; i < n; i++) {
+      const r = document.createElementNS(SVGNS, 'rect');
+      r.setAttribute('class', 'cell' + (i < s.per.count ? ' on' : ''));
+      r.setAttribute('x', 520 + i * 20); r.setAttribute('y', 427); r.setAttribute('width', 15); r.setAttribute('height', 15); r.setAttribute('rx', 2);
+      cells.append(r);
+    }
+    const count = $('#p-count');
+    count.setAttribute('x', 520 + n * 20 + 8);
+    count.textContent = `${s.per.count} of ${s.per.limit}`;
+    $('#p-age').textContent = s.per.age;
+    $('#p-caller').textContent = s.per.caller || 'nothing yet';
+    const [text, cls] = s.per.verdict;
+    $('#p-verdict').setAttribute('class', 'pill' + (cls === '' ? '' : cls === 'on' ? ' on' : ' on ' + cls));
+    $('#p-verdict-text').textContent = text;
+
+    $('#t-fire').textContent = s.table.fire;
+    $('#t-held').textContent = s.table.files;
+    $('#t-files').textContent = '';
+
+    $('#s-line').textContent = s.session.line;
+    $('#s-sub').textContent = s.session.sub;
+    $('#s-sub2').textContent = s.session.sub2;
+    $('#n-session').classList.toggle('busy', s.session.busy);
+
+    svg.querySelectorAll('.node').forEach((node) => node.classList.toggle('focus', (focus || []).includes(node.dataset.key)));
+  };
+
+  // Animation.
+  let runId = 0;
+  const resetWires = () => {
+    movers.replaceChildren();
+    svg.querySelectorAll('.wire').forEach((w) => { w.dataset.lit = '0'; w.classList.remove('lit'); });
+  };
+  const light = (path, on) => {
+    const n = Math.max(0, (Number(path.dataset.lit) || 0) + (on ? 1 : -1));
+    path.dataset.lit = String(n);
+    path.classList.toggle('lit', n > 0);
+  };
+  const move = (m, my) => new Promise((resolve) => {
+    if (reduce) { resolve(); return; }
+    const path = document.getElementById(m.e);
+    const len = path.getTotalLength();
+    const dur = Math.min(1300, Math.max(560, len * 3));
+    const el = moverFor(m);
+    const begin = performance.now() + (m.d || 0);
+    let shown = false;
+    const frame = (now) => {
+      if (my !== runId) { resolve(); return; }
+      if (now < begin) { requestAnimationFrame(frame); return; }
+      if (!shown) { movers.append(el); light(path, true); shown = true; }
+      const p = Math.min(1, (now - begin) / dur);
+      const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      const pt = path.getPointAtLength((m.rev ? 1 - e : e) * len);
+      el.setAttribute('transform', `translate(${pt.x},${pt.y})`);
+      if (p < 1) { requestAnimationFrame(frame); return; }
+      setTimeout(() => {
+        if (my === runId) { el.remove(); light(path, false); }
+        resolve();
+      }, 140);
+    };
+    requestAnimationFrame(frame);
+  });
+  const sleep = (ms, my) => new Promise((resolve) => setTimeout(() => resolve(my === runId), ms));
+
+  // Player state.
+  let sc = SCENARIOS[0];
+  let pos = 0;
+  let playing = false;
+  let animating = false;
+
+  const stateAt = (p) => {
+    const s = clone(sc.init());
+    for (let i = 0; i < p; i++) {
+      const st = sc.steps[i];
+      if (st.pre) st.pre(s);
+      if (st.apply) st.apply(s);
+    }
+    return s;
+  };
+  const captionAt = (i) => (i === 0 ? sc.intro : sc.steps[i - 1].c);
+  const focusAt = (i) => (i === 0 ? [] : sc.steps[i - 1].focus || []);
+  const shownIndex = () => (animating ? pos + 1 : pos);
+
+  const playBtn = $('#play');
+  const updateUI = () => {
+    const n = sc.steps.length;
+    const i = shownIndex();
+    $('#caption').textContent = captionAt(i);
+    $('#counter').textContent = i === 0 ? `${sc.name} · start` : `${sc.name} · step ${i} of ${n}`;
+    playBtn.textContent = playing ? 'Pause' : (pos >= n ? 'Replay' : 'Play');
+    $('#back').disabled = i === 0;
+    $('#next').disabled = i >= n && !animating;
+    document.querySelectorAll('#dots .dot').forEach((d, k) => {
+      d.classList.toggle('now', k === i);
+      d.classList.toggle('past', k < i);
+      d.setAttribute('aria-current', k === i ? 'step' : 'false');
+    });
+  };
+
+  const halt = () => { runId++; playing = false; animating = false; resetWires(); };
+  const show = (p) => {
+    halt();
+    pos = Math.max(0, Math.min(sc.steps.length, p));
+    render(stateAt(pos), focusAt(pos));
+    updateUI();
+  };
+
+  const advance = async (my) => {
+    const step = sc.steps[pos];
+    const s = stateAt(pos);
+    animating = true;
+    updateUI();
+    if (step.pre) step.pre(s);
+    render(s, step.focus || []);
+    await Promise.all((step.moves || []).map((m) => move(m, my)));
+    if (my !== runId) return false;
+    if (step.apply) step.apply(s);
+    render(s, step.focus || []);
+    pos++;
+    animating = false;
+    updateUI();
+    return true;
+  };
+
+  const play = async () => {
+    if (pos >= sc.steps.length) show(0); else halt();
+    playing = true;
+    const my = runId;
+    updateUI();
+    while (my === runId && pos < sc.steps.length) {
+      const t0 = performance.now();
+      const ok = await advance(my);
+      if (!ok) return;
+      const dwell = 1000 + captionAt(pos).length * 32;
+      const left = dwell - (performance.now() - t0);
+      if (left > 0 && !(await sleep(left, my))) return;
+    }
+    if (my === runId) { playing = false; updateUI(); }
+  };
+
+  const next = () => {
+    if (animating) { show(pos + 1); return; }
+    if (pos >= sc.steps.length) return;
+    halt();
+    advance(runId);
+  };
+  const back = () => { if (animating) show(pos); else show(pos - 1); };
+  const togglePlay = () => {
+    if (playing) {
+      if (animating) show(pos + 1); else { halt(); updateUI(); }
+    } else {
+      play();
+    }
+  };
+
+  // Tabs and dots.
+  const tabs = $('#tabs');
+  SCENARIOS.forEach((x) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'tab'; b.textContent = x.name; b.dataset.id = x.id;
+    b.addEventListener('click', () => select(x.id, true));
+    tabs.append(b);
+  });
+  const buildDots = () => {
+    const dots = $('#dots');
+    dots.replaceChildren();
+    for (let k = 0; k <= sc.steps.length; k++) {
+      const d = document.createElement('button');
+      d.type = 'button'; d.className = 'dot';
+      d.setAttribute('aria-label', k === 0 ? 'Start' : `Step ${k}`);
+      d.addEventListener('click', () => show(k));
+      dots.append(d);
+    }
+  };
+  const select = (id, autoplay) => {
+    const found = SCENARIOS.find((x) => x.id === id) || SCENARIOS[0];
+    sc = found;
+    tabs.querySelectorAll('.tab').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.id === sc.id)));
+    buildDots();
+    show(0);
+    try { if (location.hash !== '#' + sc.id) history.replaceState(null, '', '#' + sc.id); } catch (e) { /* the hash is a convenience */ }
+    if (autoplay && !reduce) setTimeout(() => { if (!playing && pos === 0 && sc === found) play(); }, 500);
+  };
+
+  playBtn.addEventListener('click', togglePlay);
+  $('#next').addEventListener('click', next);
+  $('#back').addEventListener('click', back);
+  $('#restart').addEventListener('click', () => { show(0); play(); });
+  window.addEventListener('hashchange', () => {
+    const id = location.hash.slice(1);
+    if (id && id !== sc.id && SCENARIOS.some((x) => x.id === id)) select(id, true);
+  });
+
+  const initial = SCENARIOS.find((x) => '#' + x.id === location.hash);
+  select(initial ? initial.id : SCENARIOS[0].id, false);
+})();
+</script>
+</body>
+</html>
