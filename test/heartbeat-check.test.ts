@@ -326,6 +326,24 @@ describe('checking the heartbeat', () => {
     assert.match(text, /once that turn ends/);
   });
 
+  test('an hours limit is read from when, and a periodic past it and the tolerance is overdue, named in hours', async () => {
+    const file = factory();
+    file.periodics.sessions['Six hourly'] = { prompt: 'Look around.', when: { hours: 6 } };
+    const read = checker.checkConfigOf(JSON.stringify(file));
+    assert.ok(read.ok, JSON.stringify(read));
+    assert.deepEqual(read.config.periodics.at(-1), { name: 'Six hourly', hours: 6 });
+    const line = (hours: number) => stampHeartbeat(fresh(), { periodics: [{ name: 'Six hourly', at: iso(NOW - hours * HOUR), by: { hours: 6 }, session: SESSION, state: 'signed off' }] });
+    const inside = github({ config: file, heartbeat: line(8) });
+    await run(inside);
+    assert.deepEqual(inside.open(), [], 'eight hours is inside six and the tolerance of three');
+    const gh = github({ config: file, heartbeat: line(10) });
+    await run(gh);
+    const [issue, ...rest] = gh.open();
+    assert.deepEqual(rest, []);
+    assert.match(String(issue?.title), /"Six hourly"/);
+    assert.match(String(issue?.body), /its hour limit of 6 hours plus the tolerance of 3 hours/);
+  });
+
   test('an overdue periodic governor is not holding says so', async () => {
     const gh = github({ heartbeat: stampHeartbeat(fresh(), { periodics: [{ name: 'Ticket review', at: iso(NOW - 4 * DAY), by: { days: 3 }, session: SESSION, state: 'signed off' }] }) });
     await run(gh);

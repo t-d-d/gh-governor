@@ -1127,7 +1127,7 @@
       "additionalProperties": false
     },
     "periodics": {
-      "description": "A session per periodic in `sessions`, each time its day limit passes or one of its counts is reached. A merge into the default branch, an issue opened and an issue closed each queue a check of their own, so a merge runs two turns, its conflict check and its periodics check, and a count is checked whether or not the conflict check ran. A day limit comes due on the hourly sweep. A due periodic starts a new session even while its last one is still open, unless that session is in the middle of a turn: then it waits for the turn to end. Needs at least one periodic when on.",
+      "description": "A session per periodic in `sessions`, each time one of the limits in its `when` is reached: its day or hour limit passes, or one of its counts reaches its number. A merge into the default branch, an issue opened and an issue closed each queue a check of their own, so a merge runs two turns, its conflict check and its periodics check, and a count is checked whether or not the conflict check ran. A day or hour limit comes due on the hourly sweep. A due periodic starts a new session even while its last one is still open, unless that session is in the middle of a turn: then it waits for the turn to end. Needs at least one periodic when on.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -1135,7 +1135,7 @@
           "type": "boolean"
         },
         "sessions": {
-          "description": "The recurring sessions governor starts on a day limit, or on a count of merges, issues opened or issues closed, each keyed by its name: one line, with no space at either end. Its session is named after it, and governor keys its record by it. At least one when on.",
+          "description": "The recurring sessions governor starts on a day or hour limit, or on a count of merges, issues opened or issues closed, each keyed by its name: one line, with no space at either end. Its session is named after it, and governor keys its record by it. At least one when on.",
           "type": "object",
           "propertyNames": {
             "type": "string",
@@ -1167,41 +1167,142 @@
                     "additionalProperties": false
                   }
                 ],
-                "description": "What the periodic's session runs: the text, or { \"file\": \"<path>\" }. Governor adds a line under it giving the last fire's time, and lists what each count counted since then."
+                "description": "What the periodic's session runs: the text, or { \"file\": \"<path>\" }. Governor adds a line under it giving the last fire's time, and lists what each count in `when` counted since then."
               },
-              "days": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 9007199254740991,
-                "description": "Required. The day limit, in whole days, at least one: the periodic is due on the sweep nearest that many days after its last fire."
-              },
-              "counts": {
-                "description": "Counts that bring the periodic due before its day limit, once any reaches its number since the last fire: `merges`, `issuesOpened` and `issuesClosed`. At its day limit, a periodic whose counts counted nothing starts no session.",
+              "when": {
                 "type": "object",
                 "properties": {
+                  "days": {
+                    "description": "The day limit: whole days since the last fire. The periodic is due on the sweep nearest that many days after its last fire. A whole number of at least one, or { \"count\": <number> }, which says the same.",
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
+                            "description": "The limit, a whole number of at least one."
+                          }
+                        },
+                        "required": [
+                          "count"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "hours": {
+                    "description": "The hour limit: whole hours since the last fire. The periodic is due on the sweep nearest that many hours after its last fire. A whole number of at least one, or { \"count\": <number> }, which says the same.",
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
+                            "description": "The limit, a whole number of at least one."
+                          }
+                        },
+                        "required": [
+                          "count"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
                   "merges": {
-                    "description": "Pull requests merged into the default branch since the last fire that bring the periodic due, a whole number of at least one.",
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 9007199254740991
+                    "description": "Pull requests merged into the default branch since the last fire. A whole number of at least one, or { \"count\": <number> }, which says the same.",
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
+                            "description": "The limit, a whole number of at least one."
+                          }
+                        },
+                        "required": [
+                          "count"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   },
                   "issuesOpened": {
-                    "description": "Issues opened since the last fire that bring the periodic due, a whole number of at least one.",
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 9007199254740991
+                    "description": "Issues opened since the last fire. A whole number of at least one, or { \"count\": <number> }, which says the same.",
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
+                            "description": "The limit, a whole number of at least one."
+                          }
+                        },
+                        "required": [
+                          "count"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   },
                   "issuesClosed": {
-                    "description": "Issues closed since the last fire that bring the periodic due, a whole number of at least one.",
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 9007199254740991
+                    "description": "Issues closed since the last fire. A whole number of at least one, or { \"count\": <number> }, which says the same.",
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991,
+                            "description": "The limit, a whole number of at least one."
+                          }
+                        },
+                        "required": [
+                          "count"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "The periodic's limits: it comes due when any one is reached. Exactly one of `days` and `hours`, and any of `merges`, `issuesOpened` and `issuesClosed`. Each is a whole number of at least one, or { \"count\": <number> }. At its day or hour limit, a periodic whose counts counted nothing starts no session."
               },
               "gapHours": {
-                "description": "The fewest whole hours between two of the periodic's runs, at least one. A count reached inside the gap fires on the first event or sweep after it.",
+                "description": "The fewest whole hours between two of the periodic's runs, at least one. A limit reached inside the gap fires on the first event or sweep after it.",
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 9007199254740991
@@ -1234,7 +1335,7 @@
             },
             "required": [
               "prompt",
-              "days"
+              "when"
             ],
             "additionalProperties": false
           }

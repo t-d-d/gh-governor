@@ -52,8 +52,12 @@ describe('the governor block: a line for pickup and one per periodic', () => {
       { name: 'Closed', at: AT, by: { count: 'issuesClosed', number: 1 }, session: OTHER, state: 'held' },
       { name: 'Weekly retro', at: EARLIER, by: { days: 7 }, session: null, state: 'nothing to do' },
       { name: 'Daily', at: EARLIER, by: { days: 1 }, session: SESSION, state: 'open' },
+      { name: 'Six hourly', at: EARLIER, by: { hours: 6 }, session: SESSION, state: 'open' },
+      { name: 'Hourly', at: EARLIER, by: { hours: 1 }, session: SESSION, state: 'open' },
     ];
     const body = stampHeartbeat(BODY, { periodics: lines as never });
+    assert.match(body, /^- periodic "Six hourly": last fire 2026-10-28T08:00:00\.000Z, by its hour limit of 6 hours, session https:\/\/claude\.ai\/code\/session_01RUN, open$/m);
+    assert.match(body, /by its hour limit of 1 hour, /);
     assert.match(body, /^- periodic "Code review": last fire 2026-10-29T20:00:00\.000Z, by 20 merges, session https:\/\/claude\.ai\/code\/session_01RUN, open$/m);
     assert.match(body, /^- periodic "Weekly retro": last fire 2026-10-28T08:00:00\.000Z, by its day limit of 7 days, session none, nothing to do$/m);
     assert.match(body, /by its day limit of 1 day, /);

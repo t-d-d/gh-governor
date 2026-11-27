@@ -1,7 +1,10 @@
 /**
  * Periodics: recurring sessions a repo lists in its config file
- * (dispatch/repo-config.mjs), each with a name, a prompt and a day limit,
- * and optionally counts of events and a minimum gap.
+ * (dispatch/repo-config.mjs), each with a name, a prompt and a time limit
+ * in days or hours, and optionally counts of events and a minimum gap. The
+ * file holds its limits in `when`; `toConfig` reads them into the time
+ * limit and the counts this module takes. Below, "day limit" means the time
+ * limit in either unit.
  *
  * The bare schedule fire reads each periodic's record from the state table
  * ({@link duePeriodics}): the time of its last fire and the session it
@@ -35,7 +38,7 @@
  * let the next count start a second run over the busy one. An open session
  * between turns does not hold it: the fire starts a new session and leaves
  * the old one as it is, whether or not it signed off or was archived. A
- * periodic's days and counts are its only clock, and its fire is never sent
+ * periodic's time limit and counts are its only clock, and its fire is never sent
  * to the old session as a message, as a hook's is. A record with no
  * session, from an unconfirmed launch, holds nothing. A session that cannot
  * be read refuses the periodic for the turn, and is never taken for an idle
@@ -110,7 +113,7 @@ export const LISTED_MAX = 100;
  *   still there, not archived, and not idle. A read that fails throws.
  * @typedef {Partial<Record<Count, Counted[]>>} Windows
  * @typedef {{ periodic: import('./repo-config.mjs').Periodic, read: PeriodicRecord, due: number, by: import('./heartbeat.mjs').Limit, windows?: Windows, asOf?: string }} Due
- *   `by`: the limit that brought it due, its day limit or the first count
+ *   `by`: the limit that brought it due, its time limit or the first count
  *   that reached its number.
  *   `windows`: what each of its counts counted, for one that has counts.
  *   `asOf`: then the time the windows were read from, which its fire
@@ -208,6 +211,19 @@ const countsOf = (periodic) => COUNTS.flatMap((kind) => {
 });
 
 /**
+ * A periodic's time limit: how long after its last fire it comes due, and
+ * the limit as its heartbeat line names it, in the unit its file gives.
+ *
+ * @param {import('./repo-config.mjs').Periodic} periodic
+ * @returns {{ ms: number, by: import('./heartbeat.mjs').Limit }}
+ */
+const timeLimitOf = ({ days, hours }) => {
+  if (hours !== undefined) return { ms: hours * HOUR_MS, by: { hours } };
+  if (days !== undefined) return { ms: days * DAY_MS, by: { days } };
+  throw new Error('a periodic names a time limit, days or hours: the schema refuses one with neither');
+};
+
+/**
  * The time of the last fire that ran, if the record knows one: a baseline
  * ran nothing, and a day limit with nothing to do keeps the run before it.
  *
@@ -291,7 +307,8 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
     return true;
   };
   for (const periodic of periodics) {
-    const { name, days } = periodic;
+    const { name } = periodic;
+    const time = timeLimitOf(periodic);
     const counts = countsOf(periodic);
     if (event !== undefined && !counts.some(([kind]) => kind === event)) continue;
     /** @type {PeriodicRecord | null} */
@@ -325,10 +342,10 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       continue;
     }
     const at = Date.parse(read.at);
-    const limit = at + days * DAY_MS;
-    const dayDue = event === undefined && now - at >= days * DAY_MS - SWEEP_GRACE_MS;
+    const limit = at + time.ms;
+    const dayDue = event === undefined && now - at >= time.ms - SWEEP_GRACE_MS;
     if (counts.length === 0) {
-      if (dayDue && !(await held(name, read))) due.push({ periodic, read, due: limit, by: { days } });
+      if (dayDue && !(await held(name, read))) due.push({ periodic, read, due: limit, by: time.by });
       continue;
     }
     /** @type {Windows} */
@@ -357,7 +374,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       try {
         const written = await state.recordPeriodic(repo, name, read, record);
         log('dispatch-periodic', { repo, periodic: name, outcome: written ? 'nothing to do' : 'nothing to do, and its record moved since the read', at: record.at });
-        if (written) beats.push({ name, at: record.at, by: { days }, session: null, state: 'nothing to do' });
+        if (written) beats.push({ name, at: record.at, by: time.by, session: null, state: 'nothing to do' });
       } catch (error) {
         const message = messageOf(error);
         log('dispatch-periodic-unrecorded', { level: 'error', repo, periodic: name, error: message, reason: 'its nothing-to-do could not be written, so the next fire reads its windows again' });
@@ -365,7 +382,7 @@ export const duePeriodics = async ({ repo, periodics, state, now, log, window = 
       }
       continue;
     }
-    due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, by: by === undefined ? { days } : { count: by[0], number: by[1] }, windows, asOf: new Date(now).toISOString() });
+    due.push({ periodic, read, due: reached ? Math.min(limit, now) : limit, by: by === undefined ? time.by : { count: by[0], number: by[1] }, windows, asOf: new Date(now).toISOString() });
   }
   return { due, unread, beats };
 };

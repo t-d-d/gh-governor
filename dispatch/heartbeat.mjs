@@ -89,8 +89,9 @@ export const HEARTBEAT_END = '<!-- governor:heartbeat-end -->';
 
 /**
  * @typedef {import('./webhook/fire.mjs').Count} Count
- * @typedef {{ days: number } | { count: Count, number: number }} Limit
- *   What fired a periodic: its day limit, or the count that reached its number.
+ * @typedef {{ days: number } | { hours: number } | { count: Count, number: number }} Limit
+ *   What fired a periodic: its time limit, in the unit its file gives, or
+ *   the count that reached its number.
  * @typedef {'open' | 'signed off' | 'held' | 'nothing to do' | 'not fired'} RunState
  *   `held`: the fire came due while the session the line names was in the
  *   middle of a turn. Its text still reads "held while that session is open",
@@ -147,13 +148,17 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const PICKUP = /^- pickup: last sweep (\S+), started (\d+) sessions?$/;
 const PERIODIC = new RegExp([
   '^- periodic ("(?:[^"\\\\]|\\\\.)*"): (last fire|first read) (\\S+)',
-  '(?:, by (?:its day limit of (\\d+) days?|(\\d+) (merges?|issues? opened|issues? closed)))?',
+  '(?:, by (?:its day limit of (\\d+) days?|its hour limit of (\\d+) hours?|(\\d+) (merges?|issues? opened|issues? closed)))?',
   `, session (\\S+), (${Object.values(STATES).join('|')})$`,
 ].join(''));
 const RULES = new RegExp(`^- session rules: ("(?:[^"\\\\]|\\\\.)*") (${Object.values(RULES_BLOCKS).join('|')})$`);
 
 /** @param {Limit} by */
-const limitText = (by) => ('days' in by ? `its day limit of ${plural(by.days, 'day', 'days')}` : plural(by.number, ...COUNTED[by.count]));
+const limitText = (by) => {
+  if ('days' in by) return `its day limit of ${plural(by.days, 'day', 'days')}`;
+  if ('hours' in by) return `its hour limit of ${plural(by.hours, 'hour', 'hours')}`;
+  return plural(by.number, ...COUNTED[by.count]);
+};
 
 /** @param {PickupLine} line */
 const pickupText = ({ at, started }) => `- pickup: last sweep ${at}, started ${plural(started, 'session', 'sessions')}`;
@@ -178,13 +183,13 @@ const lineOf = (text) => {
   if (rules !== null) return { rules: { file: JSON.parse(String(rules[1])), block: /** @type {RulesLine['block']} */ (RULES_BLOCK_OF[String(rules[2])]) } };
   const m = PERIODIC.exec(text);
   if (m === null) return null;
-  const [, name, read, at, days, number, counted, session, state] = m;
+  const [, name, read, at, days, hours, number, counted, session, state] = m;
   // Governor writes `first read` only with `not fired yet`, and `last fire`
   // only with a fire's state: a line mixing them is not governor's.
   if ((read === 'first read') !== (state === STATES['not fired'])) return null;
   const count = /** @type {Count | undefined} */ (Object.keys(COUNTED).find((k) => COUNTED[/** @type {Count} */ (k)].includes(String(counted))));
   /** @type {Limit | undefined} */
-  const by = days !== undefined ? { days: Number(days) } : count !== undefined ? { count, number: Number(number) } : undefined;
+  const by = days !== undefined ? { days: Number(days) } : hours !== undefined ? { hours: Number(hours) } : count !== undefined ? { count, number: Number(number) } : undefined;
   return {
     periodic: {
       name: JSON.parse(String(name)),
