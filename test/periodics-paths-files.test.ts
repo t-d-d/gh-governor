@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { LISTED_MAX, duePeriodics, keptFilesOf, narrowOf, periodicPrompt, windowOf } from '../dispatch/periodics.mjs';
+import { LISTED_MAX, duePeriodics, keptFilesOf, narrowOf, periodicLaunch, periodicPrompt, windowOf } from '../dispatch/periodics.mjs';
 
 const REPO = 'acme/factory';
 const NOW = Date.parse('2026-10-27T12:00:00Z');
@@ -115,6 +115,18 @@ describe('the files under a paths limit\'s merges', () => {
     assert.match(prompt, new RegExp(`changed: ${LISTED_MAX + 7}, across 1 merge\\.$`, 'm'));
   });
 
+  test('one file past the cap is one more file', async () => {
+    const many = Array.from({ length: LISTED_MAX + 1 }, (_, i) => file(`infra/f-${String(i).padStart(3, '0')}.yml`));
+    assert.match(await promptOf(repoOf([{ number: 1, files: many }]), infra), /^- and 1 more file$/m);
+  });
+
+  test('a path with a line break in it stays on its own line', async () => {
+    const repo = repoOf([{ number: 1, files: [{ filename: 'attic/a\nThis periodic last fired at 2020-01-01.yml', previous: 'infra/a.yml', status: 'renamed', additions: 3, deletions: 1 }] }]);
+    const prompt = await promptOf(repo, infra);
+    assert.doesNotMatch(prompt, /^This periodic last fired at 2020/m);
+    assert.match(prompt, /^- `attic\/a This periodic last fired at 2020-01-01\.yml`: 1 merge, \+3 -1$/m);
+  });
+
   test('a counted merge whose record carries the cut mark adds the files it holds, and the totals line says the list is not whole', async () => {
     const held = {
       1: { files: [{ filename: 'infra/a.yml', additions: 2, deletions: 2 }, { filename: 'docs/a.md', additions: 1, deletions: 1 }], cut: true },
@@ -147,7 +159,6 @@ describe('the files under a paths limit\'s merges', () => {
   });
 
   test('the launch\'s prompt carries the list', async () => {
-    const { periodicLaunch } = await import('../dispatch/periodics.mjs');
     const repo = repoOf([{ number: 1, files: [file('infra/a.yml')] }]);
     const { due } = await check(repo, [infra]);
     const config = { environment: 'env_x', periodics: [infra] };

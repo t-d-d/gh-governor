@@ -16,8 +16,9 @@
  * - `filters`: the settings its object form takes beside `count`. Each
  *   one's value is a list of at least one string. A filter says what the
  *   schema says of it, how the prompt names it, which of the window's
- *   rows it keeps, and what more the prompt says of the rows it kept. A filter may also wake its measure: `wakes` then says
- *   which deliveries do, and the receiver queues a `periodics` fire for
+ *   rows it keeps, and what more the prompt says of the rows it kept. A
+ *   filter may also wake its measure: `wakes` then says which deliveries
+ *   do, and the receiver queues a `periodics` fire for
  *   them only where a limit of the measure has the filter, as the repo's
  *   hook-table item lists (route.mjs). `labels` wakes its measure on a
  *   label change, since an issue often gets its labels just after it opens.
@@ -175,8 +176,9 @@ export const MEASURES = [
           const sorted = [...byPath].sort(([pa, a], [pb, b]) => b.merges - a.merges || (b.additions + b.deletions) - (a.additions + a.deletions) || (pa < pb ? -1 : pa > pb ? 1 : 0));
           const notWhole = short === 0 ? '' : ` The list is not whole: it is missing files for ${plural(short, 'merge')}.`;
           const head = `Files matching these patterns that the counted merges changed: ${sorted.length}, across ${plural(rows.length, 'merge')}.${notWhole}`;
-          const lines = sorted.slice(0, listed).map(([path, f]) => `- \`${path}\`: ${plural(f.merges, 'merge')}, +${f.additions} -${f.deletions}`);
-          const more = sorted.length > listed ? [`- and ${sorted.length - listed} more files`] : [];
+          // A path may hold a line break, which would start a line of its own under the prompt.
+          const lines = sorted.slice(0, listed).map(([path, f]) => `- \`${path.replace(/\s+/g, ' ')}\`: ${plural(f.merges, 'merge')}, +${f.additions} -${f.deletions}`);
+          const more = sorted.length > listed ? [`- and ${plural(sorted.length - listed, 'more file')}`] : [];
           return [head, ...lines, ...more];
         },
       },
