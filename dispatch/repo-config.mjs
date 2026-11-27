@@ -35,7 +35,8 @@
  */
 
 import { z } from 'zod';
-import { ASSOCIATIONS, COUNTS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
+import { MEASURES, measureNames } from './webhook/measures.mjs';
+import { ASSOCIATIONS, HOOK_NAME, HOOK_PER_HOUR, HOOK_PER_HOUR_MAX, SUMMONERS, WORKFLOW_PATH } from './webhook/fire.mjs';
 import { PROMPTS, unknownFills } from './prompts.mjs';
 import { BOT, START, TRUST_VALUES, autoOf, reviewOf } from './trust.mjs';
 import { DEFAULT_MODEL } from '../scripts/lib/dispatch-prompt.mjs';
@@ -472,16 +473,20 @@ export const CONNECTOR_NAME = /^[A-Za-z0-9_-]+$/;
 const LIMIT_DESCRIPTIONS = Object.freeze({
   days: 'The day limit: whole days since the last fire. The periodic is due on the sweep nearest that many days after its last fire, whatever its counts counted.',
   hours: 'The hour limit: whole hours since the last fire. The periodic is due on the sweep nearest that many hours after its last fire, whatever its counts counted.',
-  merges: 'Pull requests merged into the default branch since the last fire.',
-  issuesOpened: 'Issues opened since the last fire.',
-  issuesClosed: 'Issues closed since the last fire.',
+  ...Object.fromEntries(MEASURES.map((m) => [m.name, m.describe])),
 });
 
 /** The time limits a periodic's `when` may hold, at most one of them. */
 const TIME_LIMITS = /** @type {const} */ (['days', 'hours']);
 
-/** The limits a periodic's `when` may hold: its time limit, then the counts. */
-const LIMITS = [...TIME_LIMITS, ...COUNTS];
+/** The limits a periodic's `when` may hold: its time limit, then the measures (dispatch/webhook/measures.mjs). */
+const LIMITS = [...TIME_LIMITS, ...measureNames()];
+
+/** @param {readonly string[]} names @param {string} last @param {(name: string) => string} [shown] */
+const listed = (names, last, shown = (n) => n) => (names.length < 2 ? names.map(shown).join('') : `${names.slice(0, -1).map(shown).join(', ')} ${last} ${shown(String(names.at(-1)))}`);
+
+/** The measures as the schema's text lists them. */
+const MEASURE_LIST = listed(measureNames(), 'and', (n) => `\`${n}\``);
 
 /**
  * One limit in a periodic's `when`: a whole number of at least one, or
@@ -503,9 +508,9 @@ const whenSchema = z.strictObject(Object.fromEntries(LIMITS.map((key) => [key, l
   .superRefine((when, ctx) => {
     const times = TIME_LIMITS.filter((key) => when[key] !== undefined);
     if (times.length > 1) ctx.addIssue({ code: 'custom', path: ['hours'], message: 'when names one time limit: days and hours are one clock in two units, so set one of them' });
-    if (LIMITS.every((key) => when[key] === undefined)) ctx.addIssue({ code: 'custom', message: 'when names at least one limit: days, hours, merges, issuesOpened or issuesClosed' });
+    if (LIMITS.every((key) => when[key] === undefined)) ctx.addIssue({ code: 'custom', message: `when names at least one limit: ${listed(LIMITS, 'or')}` });
   })
-  .meta({ description: 'The periodic\'s limits: it comes due when any one is reached. At least one limit: at most one of `days` and `hours`, and any of `merges`, `issuesOpened` and `issuesClosed`. Each is a whole number of at least one, or { "count": <number> }. A day or hour limit always starts a session, even where every count counted nothing. A periodic with counts alone runs only when one is reached.' });
+  .meta({ description: `The periodic's limits: it comes due when any one is reached. At least one limit: at most one of \`days\` and \`hours\`, and any of ${MEASURE_LIST}. Each is a whole number of at least one, or { "count": <number> }. A day or hour limit always starts a session, even where every count counted nothing. A periodic with counts alone runs only when one is reached.` });
 
 const periodicSchema = z.strictObject({
   prompt: z.union([z.string().trim().min(1), promptFile]).meta({ description: 'What the periodic\'s session runs: the text, or { "file": "<path>" }. Governor adds a line under it giving the last fire\'s time, and lists what each count in `when` counted since then.' }),
@@ -762,7 +767,7 @@ const countOf = (limit) => (typeof limit === 'number' ? limit : limit.count);
 const periodicOf = (name, { when, ...rest }) => {
   /** @type {Partial<Record<import('./webhook/fire.mjs').Count, number>>} */
   const counts = {};
-  for (const kind of COUNTS) if (when[kind] !== undefined) counts[kind] = countOf(when[kind]);
+  for (const kind of measureNames()) if (when[kind] !== undefined) counts[kind] = countOf(when[kind]);
   const periodic = /** @type {Omit<Periodic, 'prompt'> & { prompt: string | PromptFile }} */ ({ name, ...rest });
   for (const key of TIME_LIMITS) if (when[key] !== undefined) periodic[key] = countOf(when[key]);
   if (Object.keys(counts).length > 0) periodic.counts = counts;
